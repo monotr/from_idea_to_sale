@@ -152,3 +152,35 @@ class ProductServices:
 
         finally:
             db.close()
+
+    def obtener_producto(self, nombre: str) -> dict:
+        db = SessionLocal()
+        try:
+            producto = db.query(Product).filter(Product.descripcion.ilike(f"%{nombre}%")).first()
+
+            if not producto:
+                return {"error": f"No se encontró un producto que coincida con '{nombre}'."}
+
+            return {
+                "id": producto.id,
+                "producto": producto.descripcion,
+                "cantidad": producto.cantidad,
+                "tipo": producto.tipo.nombre if producto.tipo else None,
+                "precio_unitario": producto.precio_unitario,
+                "costo_produccion": producto.costo_produccion,
+                "tiempo_impresion": producto.tiempo_impresion,
+                "stock_alerta": producto.stock_alerta,
+                "gramos": producto.gramos,
+                "etiquetas": [et.nombre for et in producto.etiquetas],
+                "notas": producto.notas
+            }
+
+        except Exception as e:
+            print("Error en get_producto:")
+            import traceback
+            traceback.print_exc()
+            return {"error": "Error al obtener el producto."}
+
+        finally:
+            db.close()
+

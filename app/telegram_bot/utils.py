@@ -150,7 +150,10 @@ Acciones posibles y sus parámetros:
 9. "resumen_inventario":
    - sin campos adicionales. Deja "params": {}.
 
-10. "otro":
+10. "ver_producto":
+    - producto (str): nombre del producto a consultar (ej. Stitch, Clicker, etc.)
+
+11. "otro":
    - Usa esta acción si el mensaje no puede clasificarse.
    - "params": {"texto_original": "<texto_recibido>"}
 

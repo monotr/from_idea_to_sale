@@ -30,6 +30,7 @@ ACCIONES_VALIDAS = {
     "agregar_inventario": ProductServices().agregar_inventario,
     "crear_producto": ProductServices().agregar_inventario,
     "modificar_producto": ProductServices().modificar_producto,
+    "ver_producto": ProductServices().obtener_producto,
 }
 
 async def manejar_mensaje_telegram(message: dict):
@@ -54,6 +55,22 @@ async def manejar_mensaje_telegram(message: dict):
         guardar_transcripcion(db, message_id, texto)
 
         resultado = json.loads(analizar_comando_con_gpt(texto))
+
+        
+        if resultado.get("accion") == "ver_producto":
+            # Ejecutar inmediatamente sin confirmación
+            respuesta = ProductServices().obtener_producto(resultado.get("params", {}).get("producto", ""))
+
+            if "error" in respuesta:
+                mensaje = f"❌ {respuesta['error']}"
+            else:
+                mensaje = "🔍 Producto encontrado:\n"
+                for clave, valor in respuesta.items():
+                    mensaje += f"*{clave.replace('_', ' ').capitalize()}:* {valor}\n"
+
+            enviar_mensaje_telegram(chat_id, mensaje)
+            return JSONResponse(content={"accion": "ver_producto", "ejecutado": True}, status_code=200)
+
         guardar_accion_pendiente(db, user_id, resultado, texto)
 
         await enviar_mensaje_confirmacion(chat_id, resultado)
