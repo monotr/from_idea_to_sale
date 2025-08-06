@@ -1,15 +1,28 @@
 from fastapi import APIRouter, Request, HTTPException
-from app.telegram_bot.services import procesar_mensaje
+from fastapi.responses import JSONResponse
+from app.telegram_bot.services import manejar_mensaje_telegram
+from fastapi import BackgroundTasks
+
+from app.telegram_bot.utils import enviar_mensaje_telegram
 
 router = APIRouter(prefix="/webhook", tags=["Telegram Bot"])
-
 @router.post("/telegram")
-async def telegram_webhook(request: Request):
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
     print("Mensaje recibido:", payload)
 
-    # Validación mínima
     if "message" not in payload:
-        raise HTTPException(status_code=400, detail="Sin mensaje válido")
+        return JSONResponse(status_code=200, content={"message": "Sin mensaje válido"})
 
-    return await procesar_mensaje(payload["message"])
+    message = payload["message"]
+
+    # Responde de inmediato y lanza proceso en segundo plano
+    background_tasks.add_task(manejar_mensaje_telegram, message)
+
+    # Si quieres, puedes responderle algo al usuario de inmediato:
+    chat_id = message["chat"]["id"]
+    enviar_mensaje_telegram(chat_id, "Recibido. Estoy procesando tu mensaje...")
+
+    return JSONResponse(status_code=200, content={"message": "Procesando en segundo plano"})
+
+

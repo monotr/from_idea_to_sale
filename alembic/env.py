@@ -10,8 +10,11 @@ from dotenv import load_dotenv
 # Cargar variables de entorno
 load_dotenv()
 
+from app.productos.models import Product
+from app.telegram_bot.models import TelegramTranscripcion
+
 from app.config import settings
-from app.productos.models import Base
+from app.db import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
