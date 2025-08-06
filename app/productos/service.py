@@ -77,3 +77,78 @@ class ProductServices:
 
         finally:
             db.close()
+
+    def modificar_producto(self, params: dict):
+        db = SessionLocal()
+
+        try:
+            producto_id = params.get("producto_id")
+            nombre = params.get("producto")
+
+            if not producto_id and not nombre:
+                return {"error": "Debes proporcionar el ID o nombre del producto para modificarlo."}
+
+            # Buscar el producto
+            query = db.query(Product)
+            if producto_id:
+                producto = query.filter_by(id=producto_id).first()
+            else:
+                producto = query.filter(Product.descripcion.ilike(f"%{nombre}%")).first()
+
+            if not producto:
+                return {"error": "Producto no encontrado."}
+
+            # Actualizar solo los campos presentes
+            if "descripcion" in params or "producto" in params:
+                producto.descripcion = params.get("descripcion") or nombre
+
+            if "tipo" in params:
+                tipo_nombre = params["tipo"]
+                tipo = db.query(ProductoTipo).filter_by(nombre=tipo_nombre).first()
+                if not tipo:
+                    tipo = ProductoTipo(nombre=tipo_nombre)
+                    db.add(tipo)
+                    db.commit()
+                producto.tipo_id = tipo.id
+
+            if "precio_unitario" in params:
+                producto.precio_unitario = params["precio_unitario"]
+
+            if "costo_produccion" in params:
+                producto.costo_produccion = params["costo_produccion"]
+
+            if "tiempo_impresion" in params:
+                producto.tiempo_impresion = params["tiempo_impresion"]
+
+            if "stock_alerta" in params:
+                producto.stock_alerta = params["stock_alerta"]
+
+            if "gramos" in params:
+                producto.gramos = params["gramos"]
+
+            if "notas" in params:
+                producto.notas = params["notas"]
+
+            if "etiquetas" in params:
+                etiquetas = params["etiquetas"] or []
+                nuevas = []
+                for nombre_etiqueta in etiquetas:
+                    etiqueta = db.query(Etiqueta).filter_by(nombre=nombre_etiqueta).first()
+                    if not etiqueta:
+                        etiqueta = Etiqueta(nombre=nombre_etiqueta)
+                        db.add(etiqueta)
+                        db.commit()
+                    nuevas.append(etiqueta)
+                producto.etiquetas = nuevas  # Reemplaza completamente
+
+            db.commit()
+            return {"mensaje": f"Producto actualizado: {producto.descripcion}"}
+
+        except Exception as e:
+            print("Error en modificar_producto:")
+            import traceback
+            traceback.print_exc()
+            return {"error": "Error al modificar el producto"}
+
+        finally:
+            db.close()

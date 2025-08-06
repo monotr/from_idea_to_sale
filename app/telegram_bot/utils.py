@@ -99,7 +99,7 @@ Acciones posibles y sus parámetros:
    - tipo (str, opcional): categoría general, como "articulado", "decorativo", "accesorio", etc.
    - precio_unitario (float, opcional): precio de venta por unidad.
    - costo_produccion (float, opcional): costo interno por unidad.
-   - tiempo_impresion (int, opcional): minutos que toma imprimir, si no son minutos conviertelo.
+   - tiempo_impresion (int, opcional): minutos que toma imprimir, si no son minutos conviértelo.
    - stock_alerta (int, opcional): nivel mínimo antes de alertar.
    - gramos (int, opcional): gramos usados por unidad.
    - etiquetas (list[str], opcional): palabras clave como "brilla en la oscuridad", "niño", "navideño", etc.
@@ -112,33 +112,45 @@ Acciones posibles y sus parámetros:
    - etiquetas: ["brilla en la oscuridad"]
    - notas: si hay contexto adicional
 
-4. "registrar_gasto":
+4. "modificar_producto":
+   - producto (str): nombre actual del producto que se desea modificar.
+   - descripcion (str, opcional): nuevo nombre del producto.
+   - tipo (str, opcional): nueva categoría.
+   - precio_unitario (float, opcional): nuevo precio de venta por unidad.
+   - costo_produccion (float, opcional): nuevo costo interno por unidad.
+   - tiempo_impresion (int, opcional): nuevo tiempo de impresión en minutos.
+   - stock_alerta (int, opcional): nuevo nivel de alerta de stock.
+   - gramos (int, opcional): nuevos gramos por unidad.
+   - etiquetas (list[str], opcional): etiquetas actualizadas.
+   - notas (str, opcional): nueva nota o descripción adicional.
+
+5. "registrar_gasto":
    - descripcion (str): concepto del gasto (ej. gasolina, renta).
    - monto (float): cantidad gastada.
    - categoria (str, opcional): tipo de gasto (ej. transporte, servicios).
    - notas (str, opcional): detalles adicionales.
 
-5. "crear_cotizacion":
+6. "crear_cotizacion":
    - cliente (str, opcional): nombre del cliente.
    - productos (list): lista de objetos con:
      - producto (str)
      - cantidad (int)
    - notas (str, opcional)
 
-6. "registrar_evento":
+7. "registrar_evento":
    - nombre (str): nombre del evento.
    - fecha (str, opcional): en formato YYYY-MM-DD o texto libre.
    - descripcion (str, opcional)
 
-7. "crear_tarea":
+8. "crear_tarea":
    - descripcion (str): lo que se debe hacer.
    - fecha (str, opcional): en formato YYYY-MM-DD o texto libre.
    - prioridad (str, opcional): baja, media o alta.
 
-8. "resumen_inventario":
+9. "resumen_inventario":
    - sin campos adicionales. Deja "params": {}.
 
-9. "otro":
+10. "otro":
    - Usa esta acción si el mensaje no puede clasificarse.
    - "params": {"texto_original": "<texto_recibido>"}
 
@@ -162,7 +174,6 @@ Ejemplo de respuesta esperada:
   }
 }
 """
-
         respuesta = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -202,6 +213,18 @@ def analizar_modificacion_con_gpt(texto: str, accion: str, params_actuales: dict
                 "gramos": "gramos por unidad",
                 "etiquetas": "etiquetas descriptivas",
                 "notas": "contexto o descripción"
+            },
+            "modificar_producto": {
+                "producto": "nombre del producto a modificar",
+                "descripcion": "nuevo nombre del producto si se quiere cambiar",
+                "tipo": "nueva categoría general",
+                "precio_unitario": "nuevo precio de venta por unidad",
+                "costo_produccion": "nuevo costo interno por unidad",
+                "tiempo_impresion": "nuevo tiempo de impresión (en minutos)",
+                "stock_alerta": "nuevo nivel mínimo de stock",
+                "gramos": "nuevos gramos por unidad",
+                "etiquetas": "etiquetas actualizadas",
+                "notas": "nueva nota o descripción"
             },
             "registrar_venta": {
                 "producto": "nombre del producto vendido",

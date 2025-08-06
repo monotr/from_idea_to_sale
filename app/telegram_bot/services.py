@@ -1,19 +1,36 @@
-from copy import deepcopy
-import json
-from datetime import datetime, timedelta
 from fastapi.responses import JSONResponse
+from datetime import datetime, timedelta
+from app.db import SessionLocal
+from app.telegram_bot.models import TelegramTranscripcion, AccionPendiente, EstadoAccion
 from app.telegram_bot.utils import (
-    analizar_modificacion_con_gpt,
     enviar_mensaje_telegram,
     es_usuario_autorizado,
     descargar_audio_telegram,
     transcribir_audio_con_whisper,
-    analizar_comando_con_gpt
+    analizar_comando_con_gpt,
+    analizar_modificacion_con_gpt
 )
-from app.db import SessionLocal
-from app.telegram_bot.models import AccionPendiente, EstadoAccion, TelegramTranscripcion
 from app.productos.service import ProductServices
 import traceback
+import json
+from copy import deepcopy
+
+POTENCIALES_CAMPOS = {
+    "tipo": "tipo de producto",
+    "precio_unitario": "precio unitario",
+    "costo_produccion": "costo de producción",
+    "tiempo_impresion": "tiempo de impresión (minutos)",
+    "stock_alerta": "nivel de alerta de stock",
+    "gramos": "gramos por unidad",
+    "etiquetas": "etiquetas",
+    "notas": "notas o descripción adicional"
+}
+
+ACCIONES_VALIDAS = {
+    "agregar_inventario": ProductServices().agregar_inventario,
+    "crear_producto": ProductServices().agregar_inventario,
+    "modificar_producto": ProductServices().modificar_producto,
+}
 
 async def manejar_mensaje_telegram(message: dict):
     try:
@@ -25,201 +42,140 @@ async def manejar_mensaje_telegram(message: dict):
         if not es_usuario_autorizado(user_id):
             return JSONResponse(content={"message": "Usuario no autorizado"}, status_code=200)
 
-        # Revisar si ya fue procesado
-        existente = db.query(TelegramTranscripcion).filter_by(message_id=message_id).first()
-        if existente:
-            return JSONResponse(content={"message": "Ya procesado", "texto": existente.texto}, status_code=200)
+        if ya_fue_procesado(db, message_id):
+            return JSONResponse(content={"message": "Ya procesado"}, status_code=200)
 
-        # Revisar si hay acción pendiente sin confirmar y no expirada
-        un_minuto_atras = datetime.utcnow() - timedelta(minutes=1)
-        accion_pendiente = (
-            db.query(AccionPendiente)
-            .filter(
-                AccionPendiente.user_id == str(user_id),
-                AccionPendiente.estado == EstadoAccion.pendiente_confirmacion,
-                AccionPendiente.fecha_creacion >= un_minuto_atras
-            )
-            .order_by(AccionPendiente.fecha_creacion.desc())
-            .first()
-        )
+        accion_pendiente = obtener_accion_pendiente(db, user_id)
 
         if accion_pendiente:
-            # Procesar mensaje (voz o texto)
-            texto = ""
-            if "text" in message:
-                texto = message["text"]
-            elif "voice" in message:
-                file_id = message["voice"]["file_id"]
-                ruta_audio = descargar_audio_telegram(file_id)
-                texto = transcribir_audio_con_whisper(ruta_audio)
-            else:
-                texto = "(no compatible)"
-            texto_usuario = texto.strip().lower()
+            return await procesar_accion_pendiente(db, message, accion_pendiente, chat_id)
 
-            if texto_usuario == "/cancelar":
-                accion_pendiente.estado = EstadoAccion.cancelada
-                db.commit()
-                enviar_mensaje_telegram(chat_id, "❌ Acción cancelada.")
-                return JSONResponse(content={"message": "Acción cancelada"}, status_code=200)
+        texto = await obtener_texto_del_mensaje(message)
+        guardar_transcripcion(db, message_id, texto)
 
-            elif texto_usuario == "/confirmar":
-                if not accion_pendiente or (accion_pendiente.fecha_creacion < datetime.utcnow() - timedelta(minutes=1)):
-                    return JSONResponse(content={"message": "⚠️ La acción pendiente expiró. Por favor repite el comando."}, status_code=200)
+        resultado = json.loads(analizar_comando_con_gpt(texto))
+        guardar_accion_pendiente(db, user_id, resultado, texto)
 
-                resultado = {
-                    "accion": accion_pendiente.accion,
-                    "params": accion_pendiente.params_json
-                }
-
-                try:
-                    if accion_pendiente.accion == "agregar_inventario":
-                        respuesta_accion = ProductServices().agregar_inventario(accion_pendiente.params_json)
-                    elif accion_pendiente.accion == "crear_producto":
-                        respuesta_accion = ProductServices().agregar_inventario(accion_pendiente.params_json)
-                    # Aquí puedes añadir más acciones válidas...
-                    else:
-                        raise ValueError(f"Acción no soportada: {accion_pendiente.accion}")
-
-                    accion_pendiente.estado = EstadoAccion.confirmada
-                    db.commit()
-                    accion_pendiente.estado = EstadoAccion.ejecutada
-                    db.commit()
-
-                    enviar_mensaje_telegram(chat_id, f"✅ Acción ejecutada:\n{respuesta_accion}")
-                    return JSONResponse(content={"message": "Acción confirmada y ejecutada"}, status_code=200)
-
-                except Exception as e:
-                    traceback.print_exc()
-                    print("❌ Error al ejecutar la acción confirmada:", e)
-                    accion_pendiente.estado = EstadoAccion.error
-                    db.commit()
-                    enviar_mensaje_telegram(chat_id, "❌ Ocurrió un error al ejecutar la acción.")
-                    return JSONResponse(content={"message": "Error al ejecutar acción"}, status_code=200)
-
-            else:
-                respuesta_json = analizar_modificacion_con_gpt(
-                    texto_usuario,
-                    accion_pendiente.accion,
-                    accion_pendiente.params_json or {}
-                )
-                print("xxx respuesta_json",respuesta_json)
-
-                nuevos_params = respuesta_json.get("params", {})
-                print("🆕 Nuevos parámetros detectados:", nuevos_params)
-
-                params_actuales = deepcopy(accion_pendiente.params_json or {})
-                print("📦 Parámetros actuales antes de merge:", params_actuales)
-                for key, value in (nuevos_params or {}).items():
-                    params_actuales[key] = value
-                    print(f"🔁 Campo actualizado/agregado: {key} = {value}")
-
-                accion_pendiente.params_json = params_actuales
-                db.commit()
-
-                preview = json.dumps(params_actuales, indent=2, ensure_ascii=False)
-                POTENCIALES_CAMPOS = {
-                    "tipo": "tipo de producto",
-                    "precio_unitario": "precio unitario",
-                    "costo_produccion": "costo de producción",
-                    "tiempo_impresion": "tiempo de impresión (minutos)",
-                    "stock_alerta": "nivel de alerta de stock",
-                    "gramos": "gramos por unidad",
-                    "etiquetas": "etiquetas",
-                    "notas": "notas o descripción adicional"
-                }
-                campos_faltantes = [c for c in POTENCIALES_CAMPOS if c not in params_actuales]
-                sugerencias = [POTENCIALES_CAMPOS[c] for c in campos_faltantes]
-
-                mensaje_confirmacion = (
-                    "✏️ Parámetros actualizados:\n"
-                    f"*{accion_pendiente.accion}*\n\n"
-                    f"📦 Detalles:\n```\n{preview}\n```\n"
-                )
-                if sugerencias:
-                    mensaje_confirmacion += (
-                        "\nℹ️ Puedes agregar también:\n"
-                        "- " + "\n- ".join(sugerencias) + "\n"
-                    )
-                mensaje_confirmacion += "\n¿Deseas confirmar esta acción?\nResponde con /confirmar o /cancelar."
-
-                enviar_mensaje_telegram(chat_id, mensaje_confirmacion)
-                return JSONResponse(content={"message": "Esperando confirmación actualizada"}, status_code=200)
-
-        # Procesar mensaje (voz o texto)
-        if "text" in message:
-            texto = message["text"]
-        elif "voice" in message:
-            file_id = message["voice"]["file_id"]
-            ruta_audio = descargar_audio_telegram(file_id)
-            texto = transcribir_audio_con_whisper(ruta_audio)
-        else:
-            texto = "(no compatible)"
-
-        # Guardar transcripción
-        nuevo = TelegramTranscripcion(message_id=message_id, texto=texto, procesado=True)
-        db.add(nuevo)
-        db.commit()
-
-        # Llamar a GPT
-        respuesta_json = analizar_comando_con_gpt(texto)
-        resultado = json.loads(respuesta_json)
-
-        # Guardar como acción pendiente
-        pendiente = AccionPendiente(
-            user_id=str(user_id),
-            accion=resultado.get("accion"),
-            params_json=resultado.get("params"),
-            mensaje_original=texto,
-            estado=EstadoAccion.pendiente_confirmacion
-        )
-        db.add(pendiente)
-        db.commit()
-
-        # Preparar mensaje de confirmación
-        params_recibidos = resultado.get("params", {})
-        POTENCIALES_CAMPOS = {
-            "tipo": "tipo de producto",
-            "precio_unitario": "precio unitario",
-            "costo_produccion": "costo de producción",
-            "tiempo_impresion": "tiempo de impresión (minutos)",
-            "stock_alerta": "nivel de alerta de stock",
-            "gramos": "gramos por unidad",
-            "etiquetas": "etiquetas",
-            "notas": "notas o descripción adicional"
-        }
-        # Detectar campos faltantes
-        campos_faltantes = [
-            nombre for nombre, descripcion in POTENCIALES_CAMPOS.items()
-            if nombre not in params_recibidos
-        ]
-
-        # Mensaje base
-        preview = json.dumps(params_recibidos, indent=2, ensure_ascii=False)
-
-        mensaje_confirmacion = (
-            "📝 Acción detectada:\n"
-            f"*{resultado.get('accion')}*\n\n"
-            f"📦 Detalles:\n```\n{preview}\n```\n"
-        )
-
-        # Agregar sugerencia si hay campos faltantes
-        if campos_faltantes:
-            sugerencias = [POTENCIALES_CAMPOS[c] for c in campos_faltantes]
-            mensaje_confirmacion += (
-                "\nℹ️ Puedes agregar también:\n"
-                "- " + "\n- ".join(sugerencias) + "\n"
-            )
-
-        mensaje_confirmacion += "\n¿Deseas confirmar esta acción?\nResponde con /confirmar o /cancelar."
-
-        enviar_mensaje_telegram(chat_id, mensaje_confirmacion)
-
+        await enviar_mensaje_confirmacion(chat_id, resultado)
         return JSONResponse(content={"accion": resultado.get("accion")}, status_code=200)
 
-    except Exception as e:
-        print("Error procesando mensaje Telegram:")
+    except Exception:
         traceback.print_exc()
         return JSONResponse(content={"message": "Error interno, pero se responde 200 para evitar reintentos"}, status_code=200)
+
+def ya_fue_procesado(db, message_id):
+    return db.query(TelegramTranscripcion).filter_by(message_id=message_id).first()
+
+def obtener_accion_pendiente(db, user_id):
+    un_minuto_atras = datetime.utcnow() - timedelta(minutes=1)
+    return db.query(AccionPendiente).filter(
+        AccionPendiente.user_id == str(user_id),
+        AccionPendiente.estado == EstadoAccion.pendiente_confirmacion,
+        AccionPendiente.fecha_creacion >= un_minuto_atras
+    ).order_by(AccionPendiente.fecha_creacion.desc()).first()
+
+async def obtener_texto_del_mensaje(message):
+    if "text" in message:
+        return message["text"]
+    elif "voice" in message:
+        file_id = message["voice"]["file_id"]
+        ruta_audio = descargar_audio_telegram(file_id)
+        return transcribir_audio_con_whisper(ruta_audio)
+    return "(no compatible)"
+
+def guardar_transcripcion(db, message_id, texto):
+    trans = TelegramTranscripcion(message_id=message_id, texto=texto, procesado=True)
+    db.add(trans)
+    db.commit()
+
+def guardar_accion_pendiente(db, user_id, resultado, texto):
+    nueva = AccionPendiente(
+        user_id=str(user_id),
+        accion=resultado.get("accion"),
+        params_json=resultado.get("params"),
+        mensaje_original=texto,
+        estado=EstadoAccion.pendiente_confirmacion
+    )
+    db.add(nueva)
+    db.commit()
+
+async def enviar_mensaje_confirmacion(chat_id, resultado):
+    params = resultado.get("params", {})
+    preview = json.dumps(params, indent=2, ensure_ascii=False)
+    faltan = [v for k, v in POTENCIALES_CAMPOS.items() if k not in params]
+
+    mensaje = (
+        f"📝 Acción detectada:\n*{resultado.get('accion')}*\n\n"
+        f"📦 Detalles:\n```\n{preview}\n```\n"
+    )
+    if faltan:
+        mensaje += "\n️Puedes agregar también:\n- " + "\n- ".join(faltan) + "\n"
+    mensaje += "\n❓¿Deseas confirmar esta acción?\nResponde con /confirmar o /cancelar."
+    enviar_mensaje_telegram(chat_id, mensaje)
+
+async def procesar_accion_pendiente(db, message, accion_pendiente, chat_id):
+    texto = await obtener_texto_del_mensaje(message)
+    texto_usuario = texto.strip().lower()
+
+    if texto_usuario == "/cancelar":
+        accion_pendiente.estado = EstadoAccion.cancelada
+        db.commit()
+        enviar_mensaje_telegram(chat_id, "❌ Acción cancelada.")
+        return JSONResponse(content={"message": "Acción cancelada"}, status_code=200)
+
+    elif texto_usuario == "/confirmar":
+        if accion_pendiente.fecha_creacion < datetime.utcnow() - timedelta(minutes=1):
+            return JSONResponse(content={"message": "⚠️ La acción pendiente expiró."}, status_code=200)
+
+        try:
+            if accion_pendiente.accion in ACCIONES_VALIDAS:
+                funcion = ACCIONES_VALIDAS[accion_pendiente.accion]
+                respuesta = funcion(accion_pendiente.params_json)
+            else:
+                raise ValueError(f"Acción no soportada: {accion_pendiente.accion}")
+
+            accion_pendiente.estado = EstadoAccion.confirmada
+            db.commit()
+            accion_pendiente.estado = EstadoAccion.ejecutada
+            db.commit()
+
+            enviar_mensaje_telegram(chat_id, f"✅ Acción ejecutada:\n{respuesta}")
+            return JSONResponse(content={"message": "Acción confirmada y ejecutada"}, status_code=200)
+
+        except Exception as e:
+            traceback.print_exc()
+            accion_pendiente.estado = EstadoAccion.error
+            db.commit()
+            enviar_mensaje_telegram(chat_id, "❌ Ocurrió un error al ejecutar la acción.")
+            return JSONResponse(content={"message": "Error al ejecutar acción"}, status_code=200)
+
+    respuesta_json = analizar_modificacion_con_gpt(
+        texto_usuario,
+        accion_pendiente.accion,
+        accion_pendiente.params_json or {}
+    )
+
+    nuevos_params = respuesta_json.get("params", {})
+    actuales = deepcopy(accion_pendiente.params_json or {})
+    actuales.update(nuevos_params)
+    accion_pendiente.params_json = actuales
+    db.commit()
+
+    preview = json.dumps(actuales, indent=2, ensure_ascii=False)
+    sugerencias = [v for k, v in POTENCIALES_CAMPOS.items() if k not in actuales]
+
+    mensaje = (
+        f"✏️ Parámetros actualizados:\n*{accion_pendiente.accion}*\n\n"
+        f"📦 Detalles:\n```\n{preview}\n```\n"
+    )
+    if sugerencias:
+        mensaje += "\n️Puedes agregar también:\n- " + "\n- ".join(sugerencias) + "\n"
+    mensaje += "\n❓¿Deseas confirmar esta acción?\nResponde con /confirmar o /cancelar."
+
+    enviar_mensaje_telegram(chat_id, mensaje)
+    return JSONResponse(content={"message": "Esperando confirmación actualizada"}, status_code=200)
+
+
     
 async def ejecutar_accion(resultado: dict):
     accion = resultado.get("accion")
